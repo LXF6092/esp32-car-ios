@@ -130,6 +130,7 @@ final class ControlCoordinator: ObservableObject {
         driveTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 50_000_000)
+                guard !Task.isCancelled else { return }
                 guard let self else { return }
                 if self.activeVector.isZero {
                     self.clearLocalDrive()
