@@ -126,6 +126,7 @@ final class ControlCoordinatorTests: XCTestCase {
             }
         transport.onDisconnect?()
         await fulfillment(of: [cleared], timeout: 1)
+        cancellable.cancel()
         XCTAssertEqual(coordinator.activeVector, .zero)
         withExtendedLifetime(cancellable) {}
     }
