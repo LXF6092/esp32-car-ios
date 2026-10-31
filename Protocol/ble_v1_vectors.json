@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "commands": [
+    {
+      "name": "arm_seq_1",
+      "opcode": 1,
+      "seq": 1,
+      "vx": 0,
+      "vy": 0,
+      "omega": 0,
+      "speed": 0,
+      "flags": 0,
+      "hex": "01010100000000000000000e"
+    },
+    {
+      "name": "drive_seq_2",
+      "opcode": 2,
+      "seq": 2,
+      "vx": 12,
+      "vy": -34,
+      "omega": 5,
+      "speed": 35,
+      "flags": 0,
+      "hex": "0102020000000cde052300f3"
+    },
+    {
+      "name": "estop_seq_3",
+      "opcode": 4,
+      "seq": 3,
+      "vx": 0,
+      "vy": 0,
+      "omega": 0,
+      "speed": 0,
+      "flags": 0,
+      "hex": "010403000000000000000033"
+    }
+  ],
+  "telemetry": {
+    "status": {
+      "state": "ARMED",
+      "command": "drive",
+      "reason": "HOLD",
+      "speed": 35,
+      "wheels": {"fl": 35, "fr": 17, "rl": 17, "rr": 35},
+      "distance": 42.3,
+      "sonar_valid": true,
+      "obstacle": false,
+      "hardware_ready": true,
+      "remote": true
+    },
+    "last_seq": 2,
+    "uptime_ms": 123456,
+    "ble_connected": true,
+    "hex": "010101022323111123a7011d0200000040e20100"
+  }
+}

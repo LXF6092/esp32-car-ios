@@ -1,0 +1,49 @@
+name: ESP32CarController
+options:
+  bundleIdPrefix: com.esp32car
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: 5.0
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1"
+targets:
+  ESP32CarController:
+    type: application
+    platform: iOS
+    sources:
+      - path: ESP32CarController
+        excludes:
+          - Resources
+    resources:
+      - path: ESP32CarController/Resources/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.esp32car.controller
+        PRODUCT_NAME: ESP32CarController
+        INFOPLIST_FILE: ESP32CarController/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_ENTITLEMENTS: ""
+  ESP32CarControllerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ESP32CarControllerTests
+    dependencies:
+      - target: ESP32CarController
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.esp32car.controller.tests
+schemes:
+  ESP32CarController:
+    build:
+      targets:
+        ESP32CarController: all
+        ESP32CarControllerTests: [test]
+    test:
+      targets:
+        - ESP32CarControllerTests
