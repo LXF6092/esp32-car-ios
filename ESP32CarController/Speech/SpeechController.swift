@@ -95,7 +95,7 @@ final class SpeechController: ObservableObject {
         completion = onFinal
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        request.taskHint = .command
+        request.taskHint = .confirmation
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
