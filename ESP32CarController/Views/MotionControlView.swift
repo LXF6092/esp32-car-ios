@@ -44,6 +44,7 @@ struct MotionControlView: View {
                     motion.calibrate()
                 }
                 .buttonStyle(.bordered)
+                .frame(minHeight: 52)
                 .disabled(!motion.hasSample)
 
                 Button(enabled ? "停止体感" : "开启体感") {
@@ -57,6 +58,7 @@ struct MotionControlView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(enabled ? CarTheme.warning : CarTheme.primary)
+                .frame(minHeight: 52)
                 .disabled(!enabled && (!coordinator.canDrive || !motion.isFresh))
             }
         }

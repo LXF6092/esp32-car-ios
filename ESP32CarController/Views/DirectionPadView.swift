@@ -4,7 +4,16 @@ struct DirectionPadView: View {
     @ObservedObject var coordinator: ControlCoordinator
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
+            HStack {
+                Label("方向控制", systemImage: "arrow.up.arrow.down")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(coordinator.canDrive ? "可驾驶" : "已锁定")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(coordinator.canDrive ? CarTheme.success : CarTheme.warning)
+            }
+
             HoldControlButton(
                 title: "前进",
                 systemImage: "arrow.up",
@@ -58,6 +67,12 @@ struct DirectionPadView: View {
                     onPress: coordinator.strafeRight,
                     onRelease: coordinator.stop
                 )
+            }
+
+            if !coordinator.canDrive {
+                Label(coordinator.safetyStatusText, systemImage: "lock.fill")
+                    .font(.caption)
+                    .foregroundStyle(CarTheme.warning)
             }
         }
         .carCard()

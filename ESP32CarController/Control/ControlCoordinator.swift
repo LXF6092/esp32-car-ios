@@ -50,6 +50,28 @@ final class ControlCoordinator: ObservableObject {
         return false
     }
 
+    var canArm: Bool {
+        isConnected
+            && telemetryIsFresh
+            && telemetry.state == .disarmed
+            && telemetry.flags.contains(.hardwareReady)
+    }
+
+    var canResetEmergencyStop: Bool {
+        isConnected && telemetryIsFresh && telemetry.state == .estop
+    }
+
+    var safetyStatusText: String {
+        guard isConnected else { return "未连接：请先搜索并连接小车" }
+        if telemetry.isEmergencyStopped { return "急停锁定：请解除急停" }
+        if telemetry.state == .fault { return "硬件故障：禁止驾驶" }
+        guard telemetryIsFresh else { return "等待车辆遥测" }
+        guard telemetry.flags.contains(.hardwareReady) else { return "硬件未就绪" }
+        guard telemetry.isArmed else { return "未使能：点击使能驱动" }
+        if telemetry.flags.contains(.obstacle) { return "前方有障碍：仅允许后退或横移" }
+        return "可驾驶"
+    }
+
     var telemetryIsFresh: Bool {
         guard let lastTelemetryAt else { return false }
         return now().timeIntervalSince(lastTelemetryAt) < 0.75
@@ -77,11 +99,13 @@ final class ControlCoordinator: ObservableObject {
     }
 
     func arm() {
+        guard canArm else { return }
         clearLocalDrive()
         send(.arm, withResponse: true)
     }
 
     func resetEmergencyStop() {
+        guard canResetEmergencyStop else { return }
         clearLocalDrive()
         send(.reset, withResponse: true)
     }

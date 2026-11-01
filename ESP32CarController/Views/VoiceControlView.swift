@@ -111,10 +111,14 @@ private struct QuickCommand: View {
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: icon)
-                .frame(maxWidth: .infinity, minHeight: 46)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 64)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.borderedProminent)
         .tint(tint)
         .disabled(disabled)
+        .accessibilityLabel(title)
+        .accessibilityValue(disabled ? "不可用" : "可用")
     }
 }

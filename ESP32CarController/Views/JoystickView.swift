@@ -5,7 +5,16 @@ struct JoystickView: View {
     @State private var knobOffset: CGSize = .zero
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
+            HStack {
+                Label("摇杆驾驶", systemImage: "gamecontroller.fill")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(coordinator.canDrive ? "可驾驶" : "已锁定")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(coordinator.canDrive ? CarTheme.success : CarTheme.warning)
+            }
+
             GeometryReader { proxy in
                 let size = min(proxy.size.width, proxy.size.height)
                 let radius = size * 0.38
@@ -26,14 +35,17 @@ struct JoystickView: View {
                     }
                     .stroke(Color.white.opacity(0.10), lineWidth: 1)
                     Circle()
-                        .fill(coordinator.canDrive ? CarTheme.primary : Color.gray)
+                        .fill(coordinator.canDrive ? CarTheme.primary : CarTheme.disabledText)
                         .frame(width: size * 0.25, height: size * 0.25)
-                        .shadow(color: CarTheme.primary.opacity(0.35), radius: 14)
+                        .shadow(color: CarTheme.primary.opacity(coordinator.canDrive ? 0.35 : 0), radius: 14)
                         .offset(knobOffset)
                 }
                 .frame(width: size, height: size)
                 .position(center)
                 .contentShape(Circle())
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("驾驶摇杆")
+                .accessibilityValue(coordinator.safetyStatusText)
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
@@ -59,6 +71,17 @@ struct JoystickView: View {
             }
             .aspectRatio(1, contentMode: .fit)
             .frame(maxHeight: 310)
+
+            if !coordinator.canDrive {
+                Label(coordinator.safetyStatusText, systemImage: "lock.fill")
+                    .font(.caption)
+                    .foregroundStyle(CarTheme.warning)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("拖动控制方向，松手立即停车")
+                    .font(.caption)
+                    .foregroundStyle(CarTheme.secondaryText)
+            }
 
             HStack(spacing: 12) {
                 HoldControlButton(

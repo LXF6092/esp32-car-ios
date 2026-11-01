@@ -11,17 +11,19 @@ enum CarTheme {
     static let danger = Color(red: 0.93, green: 0.25, blue: 0.30)
     static let success = Color(red: 0.28, green: 0.80, blue: 0.45)
     static let secondaryText = Color.white.opacity(0.64)
+    static let disabledText = Color.white.opacity(0.34)
 }
 
 struct CarCardModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .padding(14)
-            .background(CarTheme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(16)
+            .background(CarTheme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .stroke(CarTheme.border, lineWidth: 1)
             }
+            .shadow(color: Color.black.opacity(0.16), radius: 16, y: 8)
     }
 }
 

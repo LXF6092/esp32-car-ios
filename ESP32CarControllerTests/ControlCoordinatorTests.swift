@@ -26,6 +26,47 @@ private final class MockBLETransport: BLETransport {
 
 @MainActor
 final class ControlCoordinatorTests: XCTestCase {
+    func testSafetyStatusExplainsDisconnected() {
+        let coordinator = ControlCoordinator(transport: MockBLETransport())
+
+        XCTAssertEqual(coordinator.safetyStatusText, "未连接：请先搜索并连接小车")
+    }
+
+    func testCanArmRequiresFreshReadyDisarmedTelemetry() {
+        let transport = MockBLETransport()
+        let coordinator = ControlCoordinator(transport: transport)
+        transport.phaseSubject.send(.connected("test"))
+
+        XCTAssertFalse(coordinator.canArm)
+
+        var telemetry = CarTelemetry.empty
+        telemetry.flags = [.hardwareReady]
+        transport.telemetrySubject.send(telemetry)
+
+        XCTAssertTrue(coordinator.canArm)
+        coordinator.arm()
+        XCTAssertEqual(transport.sent.last?.0.opcode, .arm)
+    }
+
+    func testArmAndResetRemainBlockedBySafetyGates() {
+        let transport = MockBLETransport()
+        let coordinator = ControlCoordinator(transport: transport)
+        transport.phaseSubject.send(.connected("test"))
+
+        coordinator.arm()
+        coordinator.resetEmergencyStop()
+        XCTAssertTrue(transport.sent.isEmpty)
+
+        var telemetry = CarTelemetry.empty
+        telemetry.state = .estop
+        telemetry.flags = [.hardwareReady]
+        transport.telemetrySubject.send(telemetry)
+
+        XCTAssertTrue(coordinator.canResetEmergencyStop)
+        coordinator.resetEmergencyStop()
+        XCTAssertEqual(transport.sent.last?.0.opcode, .reset)
+    }
+
     func testDriveAndReleaseSendExpectedCommands() async {
         let transport = MockBLETransport()
         let coordinator = ControlCoordinator(transport: transport)

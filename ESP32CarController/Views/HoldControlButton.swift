@@ -12,19 +12,23 @@ struct HoldControlButton: View {
 
     var body: some View {
         Label(title, systemImage: systemImage)
-            .font(.headline)
-            .frame(maxWidth: .infinity, minHeight: 52)
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: 72)
             .foregroundStyle(disabled ? CarTheme.secondaryText : Color.white)
             .background(
-                (pressed ? tint : CarTheme.raised),
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                disabled ? CarTheme.background : (pressed ? tint.opacity(0.85) : CarTheme.raised),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(pressed ? tint : CarTheme.border, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(pressed ? tint : CarTheme.border, lineWidth: pressed ? 2 : 1)
             }
             .scaleEffect(pressed ? 0.97 : 1)
             .contentShape(Rectangle())
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(title)
+            .accessibilityValue(disabled ? "不可用" : (pressed ? "按住中" : "可用"))
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in
