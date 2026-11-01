@@ -11,7 +11,6 @@ struct DriveVector: Equatable {
         vx == 0 && vy == 0 && omega == 0
     }
 }
-
 enum ConnectionPhase: Equatable {
     case bluetoothUnavailable
     case disconnected
@@ -107,6 +106,7 @@ enum ControlMode: String, CaseIterable, Identifiable {
     case directional = "按键"
     case motion = "体感"
     case voice = "语音"
+    case inspection = "巡检"
 
     var id: String { rawValue }
 }

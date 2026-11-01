@@ -109,6 +109,8 @@ struct DashboardView: View {
             MotionControlView(coordinator: coordinator)
         case .voice:
             VoiceControlView(coordinator: coordinator)
+        case .inspection:
+            CameraInspectionView(coordinator: coordinator)
         }
     }
 

@@ -17,13 +17,15 @@
     <key>CFBundlePackageType</key>
     <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>1.1.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>用于通过蓝牙连接并控制 ESP32 小车。</string>
+    <key>NSCameraUsageDescription</key>
+    <string>用于车载巡检、地面线路识别和二维码检查点识别。</string>
     <key>NSMotionUsageDescription</key>
     <string>用于通过倾斜手机控制小车方向。</string>
     <key>NSMicrophoneUsageDescription</key>

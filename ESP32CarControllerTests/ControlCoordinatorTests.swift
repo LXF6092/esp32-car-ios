@@ -23,6 +23,39 @@ private final class MockBLETransport: BLETransport {
         return true
     }
 }
+final class InspectionGuidanceTests: XCTestCase {
+    func testMarkerCommandsAreStrictlyWhitelisted() {
+        XCTAssertEqual(InspectionGuidance.parseMarker("ESP32CAR:STOP"), .stop)
+        XCTAssertEqual(InspectionGuidance.parseMarker("ESP32CAR:CHECKPOINT:仓库A"), .checkpoint("仓库A"))
+        XCTAssertEqual(InspectionGuidance.parseMarker("FORWARD"), .ignored)
+        XCTAssertEqual(InspectionGuidance.parseMarker("ESP32CAR:GO"), .ignored)
+    }
+
+    func testMissingOrStaleLineAlwaysStops() {
+        XCTAssertEqual(
+            InspectionGuidance.driveVector(lineOffset: nil, confidence: 1, frameIsFresh: true),
+            .zero
+        )
+        XCTAssertEqual(
+            InspectionGuidance.driveVector(lineOffset: 0, confidence: 1, frameIsFresh: false),
+            .zero
+        )
+        XCTAssertEqual(
+            InspectionGuidance.driveVector(lineOffset: 0, confidence: 0.1, frameIsFresh: true),
+            .zero
+        )
+    }
+
+    func testGuidanceKeepsForwardMotionBounded() {
+        let left = InspectionGuidance.driveVector(lineOffset: -1, confidence: 1, frameIsFresh: true)
+        let center = InspectionGuidance.driveVector(lineOffset: 0, confidence: 1, frameIsFresh: true)
+        let right = InspectionGuidance.driveVector(lineOffset: 1, confidence: 1, frameIsFresh: true)
+        XCTAssertGreaterThan(center.vy, 0)
+        XCTAssertLessThan(left.omega, 0)
+        XCTAssertGreaterThan(right.omega, 0)
+        XCTAssertTrue([left, center, right].allSatisfy { abs($0.vx) <= 100 && abs($0.vy) <= 100 && abs($0.omega) <= 100 })
+    }
+}
 
 @MainActor
 final class ControlCoordinatorTests: XCTestCase {
