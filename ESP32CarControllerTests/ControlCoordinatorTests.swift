@@ -1,4 +1,5 @@
 import Combine
+import CoreGraphics
 import XCTest
 @testable import ESP32CarController
 
@@ -54,6 +55,45 @@ final class InspectionGuidanceTests: XCTestCase {
         XCTAssertLessThan(left.omega, 0)
         XCTAssertGreaterThan(right.omega, 0)
         XCTAssertTrue([left, center, right].allSatisfy { abs($0.vx) <= 100 && abs($0.vy) <= 100 && abs($0.omega) <= 100 })
+    }
+
+    func testTargetFollowingApproachesOnlyWhenAlignedAndFar() {
+        let farCentered = CGRect(x: 0.42, y: 0.35, width: 0.16, height: 0.20)
+        let farRight = CGRect(x: 0.75, y: 0.35, width: 0.16, height: 0.20)
+        let closeCentered = CGRect(x: 0.30, y: 0.20, width: 0.40, height: 0.50)
+
+        let approach = TargetFollowGuidance.driveVector(
+            boundingBox: farCentered,
+            confidence: 0.9,
+            targetIsFresh: true
+        )
+        let turnFirst = TargetFollowGuidance.driveVector(
+            boundingBox: farRight,
+            confidence: 0.9,
+            targetIsFresh: true
+        )
+        let closeStop = TargetFollowGuidance.driveVector(
+            boundingBox: closeCentered,
+            confidence: 0.9,
+            targetIsFresh: true
+        )
+
+        XCTAssertGreaterThan(approach.vy, 0)
+        XCTAssertEqual(turnFirst.vy, 0)
+        XCTAssertGreaterThan(turnFirst.omega, 0)
+        XCTAssertEqual(closeStop, .zero)
+    }
+
+    func testTargetFollowingStopsForStaleOrUncertainTarget() {
+        let box = CGRect(x: 0.4, y: 0.4, width: 0.2, height: 0.2)
+        XCTAssertEqual(
+            TargetFollowGuidance.driveVector(boundingBox: box, confidence: 0.2, targetIsFresh: true),
+            .zero
+        )
+        XCTAssertEqual(
+            TargetFollowGuidance.driveVector(boundingBox: box, confidence: 0.9, targetIsFresh: false),
+            .zero
+        )
     }
 }
 
