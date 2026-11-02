@@ -17,6 +17,10 @@ struct CameraInspectionView: View {
     @State private var previousSpeed: UInt8?
     @State private var handledMarker: String?
     @State private var checkpointMessage = "尚未识别检查点"
+    @State private var previousTargetError: Double = 0
+    @State private var lastControlAt = Date()
+    @AppStorage("objectFollowTargetSize") private var objectTargetSize = 0.34
+    @AppStorage("personFollowTargetSize") private var personTargetSize = 0.38
 
     private let controlTimer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
@@ -54,6 +58,14 @@ struct CameraInspectionView: View {
                     camera.startPersonDetection()
                 }
                 .buttonStyle(.bordered)
+            }
+
+            if operationMode != .line {
+                Button("把当前位置设为保持距离") {
+                    calibrateFollowDistance()
+                }
+                .buttonStyle(.bordered)
+                .disabled(camera.targetBoundingBox == nil)
             }
 
             HStack(spacing: 12) {
@@ -159,12 +171,19 @@ struct CameraInspectionView: View {
             return String(format: "线路偏移 %+.0f%% · 置信度 %.0f%%", offset * 100, camera.lineConfidence * 100)
         case .object, .person:
             guard let box = camera.targetBoundingBox else { return camera.targetStatus }
-            return String(
+            var text = String(
                 format: "%@ · 置信度 %.0f%% · 大小 %.0f%%",
                 camera.targetStatus,
                 camera.targetConfidence * 100,
                 max(box.width, box.height) * 100
             )
+            if operationMode == .object, let distance = camera.targetIdentityDistance {
+                text += String(format: " · 特征差 %.1f", distance)
+            }
+            if let sonar = coordinator.telemetry.distanceCentimetres {
+                text += String(format: " · %.0fcm", sonar)
+            }
+            return text
         }
     }
 
@@ -198,9 +217,9 @@ struct CameraInspectionView: View {
         case .line:
             return "识别浅色地面上的深色引导线；二维码仅接受停车和检查点命令。"
         case .object:
-            return "在画面中点击小玩具以锁定；目标偏离时先转向，对准后再低速靠近。"
+            return "点击小玩具锁定；使用视觉特征防止锁错，丢失时停车并在最后位置附近持续搜索。"
         case .person:
-            return "仅在画面中保留一个人；不做人脸识别，目标丢失或出现多人时停车。"
+            return "不做人脸识别；按最后位置持续重新锁定，重新识别后自动恢复跟随。"
         }
     }
 
@@ -223,6 +242,7 @@ struct CameraInspectionView: View {
         guard canStartAutomation else { return }
         previousSpeed = coordinator.maxSpeed
         coordinator.maxSpeed = min(coordinator.maxSpeed, operationMode == .line ? 20 : 15)
+        resetFollowController()
         automationEnabled = true
     }
 
@@ -233,6 +253,7 @@ struct CameraInspectionView: View {
             coordinator.maxSpeed = previousSpeed
             self.previousSpeed = nil
         }
+        resetFollowController()
     }
 
     private func updateAutomation() {
@@ -252,14 +273,24 @@ struct CameraInspectionView: View {
             )
         case .object, .person:
             guard camera.targetBoundingBox != nil, camera.targetIsFresh else {
-                safetyStop("安全停车：跟随目标丢失")
+                coordinator.stop()
+                checkpointMessage = "目标暂时丢失：停车等待重新锁定"
                 return
             }
+            let now = Date()
+            let box = camera.targetBoundingBox
+            let currentError = box.map { max(-1, min(1, ($0.midX - 0.5) * 2)) } ?? 0
             vector = TargetFollowGuidance.driveVector(
                 boundingBox: camera.targetBoundingBox,
                 confidence: camera.targetConfidence,
-                targetIsFresh: camera.targetIsFresh
+                targetIsFresh: camera.targetIsFresh,
+                desiredTargetSize: operationMode == .object ? objectTargetSize : personTargetSize,
+                obstacleDistanceCentimetres: coordinator.telemetry.distanceCentimetres,
+                previousHorizontalError: previousTargetError,
+                deltaTime: now.timeIntervalSince(lastControlAt)
             )
+            previousTargetError = currentError
+            lastControlAt = now
         }
 
         vector.isZero ? coordinator.stop() : coordinator.updateDrive(vector)
@@ -268,6 +299,26 @@ struct CameraInspectionView: View {
     private func safetyStop(_ message: String) {
         stopAutomation()
         checkpointMessage = message
+    }
+
+    private func calibrateFollowDistance() {
+        guard let box = camera.targetBoundingBox else { return }
+        let size = Double(max(box.width, box.height))
+        guard size >= 0.14, size <= 0.70 else {
+            checkpointMessage = "目标大小不适合标定，请调整距离"
+            return
+        }
+        if operationMode == .object {
+            objectTargetSize = size
+        } else if operationMode == .person {
+            personTargetSize = size
+        }
+        checkpointMessage = String(format: "保持距离已标定：目标大小 %.0f%%", size * 100)
+    }
+
+    private func resetFollowController() {
+        previousTargetError = 0
+        lastControlAt = Date()
     }
 
     private func handleMarker(_ marker: String?) {

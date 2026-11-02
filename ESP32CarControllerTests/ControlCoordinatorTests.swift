@@ -95,6 +95,49 @@ final class InspectionGuidanceTests: XCTestCase {
             .zero
         )
     }
+
+    func testTargetFollowingUsesSonarAsSafetyLimit() {
+        let box = CGRect(x: 0.4, y: 0.4, width: 0.2, height: 0.2)
+        let blocked = TargetFollowGuidance.driveVector(
+            boundingBox: box,
+            confidence: 0.9,
+            targetIsFresh: true,
+            obstacleDistanceCentimetres: 17
+        )
+        let slowed = TargetFollowGuidance.driveVector(
+            boundingBox: box,
+            confidence: 0.9,
+            targetIsFresh: true,
+            obstacleDistanceCentimetres: 25
+        )
+        let clear = TargetFollowGuidance.driveVector(
+            boundingBox: box,
+            confidence: 0.9,
+            targetIsFresh: true,
+            obstacleDistanceCentimetres: 80
+        )
+        XCTAssertEqual(blocked, .zero)
+        XCTAssertGreaterThan(slowed.vy, 0)
+        XCTAssertLessThan(slowed.vy, clear.vy)
+    }
+
+    func testTargetFollowingHonorsCalibratedDistance() {
+        let box = CGRect(x: 0.35, y: 0.3, width: 0.30, height: 0.30)
+        let atSetpoint = TargetFollowGuidance.driveVector(
+            boundingBox: box,
+            confidence: 0.9,
+            targetIsFresh: true,
+            desiredTargetSize: 0.30
+        )
+        let fartherThanSetpoint = TargetFollowGuidance.driveVector(
+            boundingBox: box,
+            confidence: 0.9,
+            targetIsFresh: true,
+            desiredTargetSize: 0.48
+        )
+        XCTAssertEqual(atSetpoint, .zero)
+        XCTAssertGreaterThan(fartherThanSetpoint.vy, 0)
+    }
 }
 
 @MainActor

@@ -22,6 +22,7 @@ final class CameraInspectionController: NSObject, ObservableObject {
     @Published private(set) var targetKind: FollowTargetKind?
     @Published private(set) var targetStatus = "尚未选择目标"
     @Published private(set) var lastTargetAt: Date?
+    @Published private(set) var targetIdentityDistance: Float?
 
     let session = AVCaptureSession()
 
@@ -34,7 +35,9 @@ final class CameraInspectionController: NSObject, ObservableObject {
     private var sequenceHandler = VNSequenceRequestHandler()
     private var trackedObservation: VNDetectedObjectObservation?
     private var desiredTargetKind: FollowTargetKind?
-    private var reacquisitionBlocked = false
+    private var lastKnownTargetBox: CGRect?
+    private var reacquisitionAttempts = 0
+    private var objectReferenceFeature: VNFeaturePrintObservation?
 
     var frameIsFresh: Bool {
         guard let lastFrameAt else { return false }
@@ -55,7 +58,9 @@ final class CameraInspectionController: NSObject, ObservableObject {
             guard let self else { return }
             self.sequenceHandler = VNSequenceRequestHandler()
             self.desiredTargetKind = .object
-            self.reacquisitionBlocked = false
+            self.lastKnownTargetBox = box
+            self.reacquisitionAttempts = 0
+            self.objectReferenceFeature = nil
             self.trackedObservation = VNDetectedObjectObservation(boundingBox: box)
             self.publishTarget(box: box, confidence: 1, kind: .object, status: "物件已锁定")
         }
@@ -67,7 +72,9 @@ final class CameraInspectionController: NSObject, ObservableObject {
             self.sequenceHandler = VNSequenceRequestHandler()
             self.trackedObservation = nil
             self.desiredTargetKind = .person
-            self.reacquisitionBlocked = false
+            self.lastKnownTargetBox = nil
+            self.reacquisitionAttempts = 0
+            self.objectReferenceFeature = nil
             self.publishTarget(box: nil, confidence: 0, kind: .person, status: "正在寻找单个人物")
         }
     }
@@ -78,7 +85,9 @@ final class CameraInspectionController: NSObject, ObservableObject {
             self.sequenceHandler = VNSequenceRequestHandler()
             self.trackedObservation = nil
             self.desiredTargetKind = nil
-            self.reacquisitionBlocked = false
+            self.lastKnownTargetBox = nil
+            self.reacquisitionAttempts = 0
+            self.objectReferenceFeature = nil
             self.publishTarget(box: nil, confidence: 0, kind: nil, status: "尚未选择目标")
         }
     }
@@ -206,21 +215,6 @@ final class CameraInspectionController: NSObject, ObservableObject {
         guard let kind = desiredTargetKind else { return }
 
         if let observation = trackedObservation {
-            if kind == .person, frameNumber % 10 == 0 {
-                let peopleRequest = VNDetectHumanRectanglesRequest()
-                peopleRequest.upperBodyOnly = false
-                let peopleHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
-                if (try? peopleHandler.perform([peopleRequest])) != nil,
-                   (peopleRequest.results?.count ?? 0) != 1 {
-                    trackedObservation = nil
-                    reacquisitionBlocked = true
-                    sequenceHandler = VNSequenceRequestHandler()
-                    let count = peopleRequest.results?.count ?? 0
-                    let status = count > 1 ? "检测到多人：已停车" : "人物丢失：已停车"
-                    publishTarget(box: nil, confidence: 0, kind: .person, status: status)
-                    return
-                }
-            }
             let request = VNTrackObjectRequest(detectedObjectObservation: observation)
             request.trackingLevel = .accurate
             do {
@@ -231,7 +225,21 @@ final class CameraInspectionController: NSObject, ObservableObject {
                     loseTarget(kind)
                     return
                 }
+                if kind == .object {
+                    if objectReferenceFeature == nil {
+                        objectReferenceFeature = featurePrint(for: pixelBuffer, region: result.boundingBox)
+                    } else if frameNumber % 8 == 0,
+                              let matchDistance = identityDistance(for: pixelBuffer, region: result.boundingBox) {
+                        publishIdentityDistance(matchDistance)
+                        guard matchDistance <= 22 else {
+                            loseTarget(kind)
+                            return
+                        }
+                    }
+                }
                 trackedObservation = result
+                lastKnownTargetBox = result.boundingBox
+                reacquisitionAttempts = 0
                 publishTarget(
                     box: result.boundingBox,
                     confidence: result.confidence,
@@ -244,28 +252,130 @@ final class CameraInspectionController: NSObject, ObservableObject {
             return
         }
 
-        guard kind == .person, !reacquisitionBlocked, frameNumber % 5 == 0 else { return }
+        if kind == .object {
+            guard frameNumber % 4 == 0, let lastBox = lastKnownTargetBox else { return }
+            sequenceHandler = VNSequenceRequestHandler()
+            if let candidate = bestObjectCandidate(in: pixelBuffer, around: lastBox) {
+                trackedObservation = VNDetectedObjectObservation(boundingBox: candidate.box)
+                publishIdentityDistance(candidate.distance)
+            } else if objectReferenceFeature == nil {
+                let factor = 1 + min(0.6, Double(reacquisitionAttempts) * 0.1)
+                trackedObservation = VNDetectedObjectObservation(boundingBox: expandedBox(lastBox, factor: factor))
+            }
+            publishTarget(box: nil, confidence: 0, kind: .object, status: "物件暂时丢失：正在重新锁定")
+            return
+        }
+
+        guard frameNumber % 5 == 0 else { return }
         let request = VNDetectHumanRectanglesRequest()
         request.upperBodyOnly = false
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
         guard (try? handler.perform([request])) != nil else { return }
         let people = request.results ?? []
-        if people.count == 1, let person = people.first {
+        if let person = preferredPerson(from: people) {
             sequenceHandler = VNSequenceRequestHandler()
             trackedObservation = person
-            publishTarget(box: person.boundingBox, confidence: person.confidence, kind: .person, status: "人物已锁定")
-        } else if people.count > 1 {
-            publishTarget(box: nil, confidence: 0, kind: .person, status: "检测到多人：请仅保留一人")
+            lastKnownTargetBox = person.boundingBox
+            reacquisitionAttempts = 0
+            publishTarget(box: person.boundingBox, confidence: person.confidence, kind: .person, status: "人物已重新锁定")
         } else {
-            publishTarget(box: nil, confidence: 0, kind: .person, status: "未检测到人物")
+            publishTarget(box: nil, confidence: 0, kind: .person, status: "人物暂时丢失：正在持续搜索")
         }
     }
 
     private func loseTarget(_ kind: FollowTargetKind) {
         trackedObservation = nil
-        reacquisitionBlocked = true
+        reacquisitionAttempts += 1
         sequenceHandler = VNSequenceRequestHandler()
-        publishTarget(box: nil, confidence: 0, kind: kind, status: "目标丢失：已停车，请重新选择")
+        publishTarget(box: nil, confidence: 0, kind: kind, status: "目标暂时丢失：停车并重新搜索")
+    }
+
+    private func preferredPerson(from people: [VNHumanObservation]) -> VNHumanObservation? {
+        guard let lastBox = lastKnownTargetBox else {
+            return people.max { lhs, rhs in
+                lhs.boundingBox.width * lhs.boundingBox.height < rhs.boundingBox.width * rhs.boundingBox.height
+            }
+        }
+        return people.min { lhs, rhs in
+            distance(from: lhs.boundingBox, to: lastBox) < distance(from: rhs.boundingBox, to: lastBox)
+        }
+    }
+
+    private func distance(from lhs: CGRect, to rhs: CGRect) -> Double {
+        let dx = lhs.midX - rhs.midX
+        let dy = lhs.midY - rhs.midY
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    private func expandedBox(_ box: CGRect, factor: Double) -> CGRect {
+        let width = min(1, box.width * factor)
+        let height = min(1, box.height * factor)
+        return CGRect(
+            x: max(0, min(1 - width, box.midX - width / 2)),
+            y: max(0, min(1 - height, box.midY - height / 2)),
+            width: width,
+            height: height
+        )
+    }
+
+    private func bestObjectCandidate(
+        in pixelBuffer: CVPixelBuffer,
+        around box: CGRect
+    ) -> (box: CGRect, distance: Float)? {
+        guard objectReferenceFeature != nil else { return nil }
+        let radius = min(0.36, 0.05 + Double(reacquisitionAttempts) * 0.035)
+        let offsets = [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: -radius, y: 0), CGPoint(x: radius, y: 0),
+            CGPoint(x: 0, y: -radius), CGPoint(x: 0, y: radius),
+            CGPoint(x: -radius, y: -radius), CGPoint(x: radius, y: -radius),
+            CGPoint(x: -radius, y: radius), CGPoint(x: radius, y: radius)
+        ]
+        var best: (box: CGRect, distance: Float)?
+        for offset in offsets {
+            let candidate = movedBox(box, dx: offset.x, dy: offset.y)
+            guard let distance = identityDistance(for: pixelBuffer, region: candidate) else { continue }
+            if best == nil || distance < best!.distance {
+                best = (candidate, distance)
+            }
+        }
+        guard let best, best.distance <= 22 else { return nil }
+        return best
+    }
+
+    private func movedBox(_ box: CGRect, dx: Double, dy: Double) -> CGRect {
+        CGRect(
+            x: max(0, min(1 - box.width, box.origin.x + dx)),
+            y: max(0, min(1 - box.height, box.origin.y + dy)),
+            width: box.width,
+            height: box.height
+        )
+    }
+
+    private func featurePrint(
+        for pixelBuffer: CVPixelBuffer,
+        region: CGRect
+    ) -> VNFeaturePrintObservation? {
+        let request = VNGenerateImageFeaturePrintRequest()
+        request.regionOfInterest = region
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        guard (try? handler.perform([request])) != nil else { return nil }
+        return request.results?.first as? VNFeaturePrintObservation
+    }
+
+    private func identityDistance(
+        for pixelBuffer: CVPixelBuffer,
+        region: CGRect
+    ) -> Float? {
+        guard let reference = objectReferenceFeature,
+              let candidate = featurePrint(for: pixelBuffer, region: region) else { return nil }
+        var distance: Float = 0
+        guard (try? reference.computeDistance(&distance, to: candidate)) != nil else { return nil }
+        return distance
+    }
+
+    private func publishIdentityDistance(_ distance: Float) {
+        DispatchQueue.main.async { [weak self] in self?.targetIdentityDistance = distance }
     }
 
     private func publishTarget(
