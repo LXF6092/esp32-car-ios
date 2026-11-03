@@ -7,6 +7,9 @@ enum TargetFollowGuidance {
         confidence: Float,
         targetIsFresh: Bool,
         desiredTargetSize: Double = 0.34,
+        observedTargetSize: Double? = nil,
+        targetSizeVelocity: Double = 0,
+        allowApproach: Bool = true,
         obstacleDistanceCentimetres: Double? = nil,
         previousHorizontalError: Double = 0,
         deltaTime: Double = 0.1
@@ -28,17 +31,18 @@ enum TargetFollowGuidance {
         let derivative = max(-2, min(2, (horizontalError - previousHorizontalError) / dt))
         let rotation = Int(max(-100, min(100, horizontalError * 78 + derivative * 12)))
 
-        let targetSize = Double(max(box.width, box.height))
-        let setpoint = max(0.14, min(0.70, desiredTargetSize))
+        let targetSize = observedTargetSize ?? Double(max(box.width, box.height))
+        let setpoint = max(0.04, min(0.70, desiredTargetSize))
         let sizeError = setpoint - targetSize
         let isAligned = abs(horizontalError) < 0.42
         let isFarEnough = sizeError > 0.025
         var forward: Double = 0
-        if isAligned && isFarEnough {
+        if allowApproach && isAligned && isFarEnough {
             let distanceDemand = max(0, min(1, sizeError / max(0.12, setpoint * 0.75)))
             let alignment = max(0.20, 1 - abs(horizontalError) * 1.9)
             let confidenceFactor = max(0.45, min(1, Double(confidence)))
-            forward = (16 + distanceDemand * 44) * alignment * confidenceFactor
+            let closingFactor = max(0.12, min(1, 1 - max(0, targetSizeVelocity) * 4.5))
+            forward = (16 + distanceDemand * 44) * alignment * confidenceFactor * closingFactor
         }
 
         if let distance = obstacleDistanceCentimetres, distance < 48 {

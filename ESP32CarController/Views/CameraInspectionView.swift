@@ -19,8 +19,13 @@ struct CameraInspectionView: View {
     @State private var checkpointMessage = "尚未识别检查点"
     @State private var previousTargetError: Double = 0
     @State private var lastControlAt = Date()
+    @State private var selectionRectangle: CGRect?
+    @State private var smoothedTargetSize: Double?
+    @State private var previousTargetSize: Double?
+    @State private var smoothedSonarDistance: Double?
+    @State private var distanceHold = false
     @AppStorage("objectFollowTargetSize") private var objectTargetSize = 0.34
-    @AppStorage("personFollowTargetSize") private var personTargetSize = 0.38
+    @AppStorage("personFollowShoulderWidth") private var personTargetSize = 0.16
 
     private let controlTimer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
@@ -127,20 +132,52 @@ struct CameraInspectionView: View {
                             )
                     }
 
+                    if let selectionRectangle, operationMode == .object {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(CarTheme.cyan, style: StrokeStyle(lineWidth: 2, dash: [7, 4]))
+                            .frame(width: selectionRectangle.width, height: selectionRectangle.height)
+                            .position(x: selectionRectangle.midX, y: selectionRectangle.midY)
+                    }
+
                     if operationMode == .object {
                         Rectangle()
                             .fill(Color.clear)
                             .contentShape(Rectangle())
                             .gesture(
                                 DragGesture(minimumDistance: 0)
+                                    .onChanged { value in
+                                        selectionRectangle = standardizedRectangle(
+                                            from: value.startLocation,
+                                            to: value.location,
+                                            width: previewWidth,
+                                            height: outer.size.height
+                                        )
+                                    }
                                     .onEnded { value in
                                         stopAutomation()
-                                        let point = CGPoint(
-                                            x: max(0, min(1, value.location.x / previewWidth)),
-                                            y: max(0, min(1, 1 - value.location.y / outer.size.height))
+                                        let selection = standardizedRectangle(
+                                            from: value.startLocation,
+                                            to: value.location,
+                                            width: previewWidth,
+                                            height: outer.size.height
                                         )
-                                        camera.lockObject(at: point)
-                                        checkpointMessage = "物件已选择，可开始跟随"
+                                        if selection.width >= 18, selection.height >= 18 {
+                                            camera.lockObject(in: CGRect(
+                                                x: selection.minX / previewWidth,
+                                                y: 1 - selection.maxY / outer.size.height,
+                                                width: selection.width / previewWidth,
+                                                height: selection.height / outer.size.height
+                                            ))
+                                            checkpointMessage = "物件框选完成，可开始跟随"
+                                        } else {
+                                            let point = CGPoint(
+                                                x: max(0, min(1, value.location.x / previewWidth)),
+                                                y: max(0, min(1, 1 - value.location.y / outer.size.height))
+                                            )
+                                            camera.lockObject(at: point)
+                                            checkpointMessage = "已按点击位置选择物件"
+                                        }
+                                        selectionRectangle = nil
                                     }
                             )
                     }
@@ -175,7 +212,7 @@ struct CameraInspectionView: View {
                 format: "%@ · 置信度 %.0f%% · 大小 %.0f%%",
                 camera.targetStatus,
                 camera.targetConfidence * 100,
-                max(box.width, box.height) * 100
+                (camera.targetDistanceMetric ?? Double(max(box.width, box.height))) * 100
             )
             if operationMode == .object, let distance = camera.targetIdentityDistance {
                 text += String(format: " · 特征差 %.1f", distance)
@@ -217,7 +254,7 @@ struct CameraInspectionView: View {
         case .line:
             return "识别浅色地面上的深色引导线；二维码仅接受停车和检查点命令。"
         case .object:
-            return "点击小玩具锁定；使用视觉特征防止锁错，丢失时停车并在最后位置附近持续搜索。"
+            return "用手指拖框准确选择小玩具；轻点仍可快速选择，丢失时停车并持续搜索。"
         case .person:
             return "不做人脸识别；按最后位置持续重新锁定，重新识别后自动恢复跟随。"
         }
@@ -280,14 +317,33 @@ struct CameraInspectionView: View {
             let now = Date()
             let box = camera.targetBoundingBox
             let currentError = box.map { max(-1, min(1, ($0.midX - 0.5) * 2)) } ?? 0
+            let rawSize = camera.targetDistanceMetric ?? box.map { Double(max($0.width, $0.height)) } ?? 0
+            let filteredSize = smoothedTargetSize.map { $0 * 0.70 + rawSize * 0.30 } ?? rawSize
+            let dt = max(0.04, min(0.25, now.timeIntervalSince(lastControlAt)))
+            let sizeVelocity = previousTargetSize.map { (filteredSize - $0) / dt } ?? 0
+            smoothedTargetSize = filteredSize
+            previousTargetSize = filteredSize
+
+            if let sonar = coordinator.telemetry.distanceCentimetres {
+                smoothedSonarDistance = smoothedSonarDistance.map { $0 * 0.65 + sonar * 0.35 } ?? sonar
+            }
+            let desiredSize = operationMode == .object ? objectTargetSize : personTargetSize
+            if distanceHold {
+                if filteredSize < desiredSize - max(0.025, desiredSize * 0.16) { distanceHold = false }
+            } else if filteredSize >= desiredSize - max(0.012, desiredSize * 0.07) {
+                distanceHold = true
+            }
             vector = TargetFollowGuidance.driveVector(
                 boundingBox: camera.targetBoundingBox,
                 confidence: camera.targetConfidence,
                 targetIsFresh: camera.targetIsFresh,
-                desiredTargetSize: operationMode == .object ? objectTargetSize : personTargetSize,
-                obstacleDistanceCentimetres: coordinator.telemetry.distanceCentimetres,
+                desiredTargetSize: desiredSize,
+                observedTargetSize: filteredSize,
+                targetSizeVelocity: sizeVelocity,
+                allowApproach: !distanceHold,
+                obstacleDistanceCentimetres: smoothedSonarDistance,
                 previousHorizontalError: previousTargetError,
-                deltaTime: now.timeIntervalSince(lastControlAt)
+                deltaTime: dt
             )
             previousTargetError = currentError
             lastControlAt = now
@@ -303,8 +359,9 @@ struct CameraInspectionView: View {
 
     private func calibrateFollowDistance() {
         guard let box = camera.targetBoundingBox else { return }
-        let size = Double(max(box.width, box.height))
-        guard size >= 0.14, size <= 0.70 else {
+        let size = camera.targetDistanceMetric ?? Double(max(box.width, box.height))
+        let minimum = operationMode == .person ? 0.04 : 0.10
+        guard size >= minimum, size <= 0.70 else {
             checkpointMessage = "目标大小不适合标定，请调整距离"
             return
         }
@@ -319,6 +376,28 @@ struct CameraInspectionView: View {
     private func resetFollowController() {
         previousTargetError = 0
         lastControlAt = Date()
+        smoothedTargetSize = nil
+        previousTargetSize = nil
+        smoothedSonarDistance = nil
+        distanceHold = false
+    }
+
+    private func standardizedRectangle(
+        from start: CGPoint,
+        to end: CGPoint,
+        width: CGFloat,
+        height: CGFloat
+    ) -> CGRect {
+        let startX = max(0, min(width, start.x))
+        let startY = max(0, min(height, start.y))
+        let endX = max(0, min(width, end.x))
+        let endY = max(0, min(height, end.y))
+        return CGRect(
+            x: min(startX, endX),
+            y: min(startY, endY),
+            width: abs(endX - startX),
+            height: abs(endY - startY)
+        )
     }
 
     private func handleMarker(_ marker: String?) {

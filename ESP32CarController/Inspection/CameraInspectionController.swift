@@ -9,6 +9,12 @@ enum FollowTargetKind: String {
     case person = "人物"
 }
 
+private struct HumanPoseTarget {
+    let boundingBox: CGRect
+    let shoulderWidth: Double
+    let confidence: Float
+}
+
 final class CameraInspectionController: NSObject, ObservableObject {
     @Published private(set) var permissionDenied = false
     @Published private(set) var isRunning = false
@@ -23,6 +29,7 @@ final class CameraInspectionController: NSObject, ObservableObject {
     @Published private(set) var targetStatus = "尚未选择目标"
     @Published private(set) var lastTargetAt: Date?
     @Published private(set) var targetIdentityDistance: Float?
+    @Published private(set) var targetDistanceMetric: Double?
 
     let session = AVCaptureSession()
 
@@ -53,7 +60,18 @@ final class CameraInspectionController: NSObject, ObservableObject {
         let size = 0.22
         let originX = max(0, min(1 - size, point.x - size / 2))
         let originY = max(0, min(1 - size, point.y - size / 2))
-        let box = CGRect(x: originX, y: originY, width: size, height: size)
+        lockObject(in: CGRect(x: originX, y: originY, width: size, height: size))
+    }
+
+    func lockObject(in box: CGRect) {
+        let x = max(0, min(0.96, box.origin.x))
+        let y = max(0, min(0.96, box.origin.y))
+        let box = CGRect(
+            x: x,
+            y: y,
+            width: max(0.04, min(1 - x, box.width)),
+            height: max(0.04, min(1 - y, box.height))
+        )
         frameQueue.async { [weak self] in
             guard let self else { return }
             self.sequenceHandler = VNSequenceRequestHandler()
@@ -214,6 +232,23 @@ final class CameraInspectionController: NSObject, ObservableObject {
     private func updateTargetTracking(_ pixelBuffer: CVPixelBuffer) {
         guard let kind = desiredTargetKind else { return }
 
+        if kind == .person,
+           frameNumber % 2 == 0,
+           let pose = preferredPoseTarget(from: detectHumanPoses(in: pixelBuffer)) {
+            sequenceHandler = VNSequenceRequestHandler()
+            trackedObservation = VNDetectedObjectObservation(boundingBox: pose.boundingBox)
+            lastKnownTargetBox = pose.boundingBox
+            reacquisitionAttempts = 0
+            publishTarget(
+                box: pose.boundingBox,
+                confidence: pose.confidence,
+                kind: .person,
+                status: "人体关键点跟踪中",
+                distanceMetric: pose.shoulderWidth
+            )
+            return
+        }
+
         if let observation = trackedObservation {
             let request = VNTrackObjectRequest(detectedObjectObservation: observation)
             request.trackingLevel = .accurate
@@ -301,6 +336,59 @@ final class CameraInspectionController: NSObject, ObservableObject {
         }
     }
 
+    private func detectHumanPoses(in pixelBuffer: CVPixelBuffer) -> [HumanPoseTarget] {
+        let request = VNDetectHumanBodyPoseRequest()
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        guard (try? handler.perform([request])) != nil else { return [] }
+        return (request.results ?? []).compactMap(poseTarget)
+    }
+
+    private func poseTarget(from observation: VNHumanBodyPoseObservation) -> HumanPoseTarget? {
+        guard let leftShoulder = try? observation.recognizedPoint(.leftShoulder),
+              let rightShoulder = try? observation.recognizedPoint(.rightShoulder),
+              leftShoulder.confidence >= 0.25,
+              rightShoulder.confidence >= 0.25 else { return nil }
+
+        let shoulderWidth = hypot(
+            leftShoulder.location.x - rightShoulder.location.x,
+            leftShoulder.location.y - rightShoulder.location.y
+        )
+        guard shoulderWidth >= 0.025 else { return nil }
+
+        var points = [leftShoulder, rightShoulder]
+        if let leftHip = try? observation.recognizedPoint(.leftHip), leftHip.confidence >= 0.20 {
+            points.append(leftHip)
+        }
+        if let rightHip = try? observation.recognizedPoint(.rightHip), rightHip.confidence >= 0.20 {
+            points.append(rightHip)
+        }
+
+        let xs = points.map(\.location.x)
+        let ys = points.map(\.location.y)
+        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { return nil }
+        let centerX = (minX + maxX) / 2
+        let centerY = (minY + maxY) / 2
+        let width = max(0.08, shoulderWidth * 1.65)
+        let height = max(0.16, (maxY - minY) * 1.55)
+        let box = CGRect(
+            x: max(0, min(1 - width, centerX - width / 2)),
+            y: max(0, min(1 - height, centerY - height / 2)),
+            width: min(1, width),
+            height: min(1, height)
+        )
+        let confidence = points.map(\.confidence).reduce(0, +) / Float(points.count)
+        return HumanPoseTarget(boundingBox: box, shoulderWidth: shoulderWidth, confidence: confidence)
+    }
+
+    private func preferredPoseTarget(from poses: [HumanPoseTarget]) -> HumanPoseTarget? {
+        guard let lastBox = lastKnownTargetBox else {
+            return poses.max { $0.shoulderWidth < $1.shoulderWidth }
+        }
+        return poses.min {
+            distance(from: $0.boundingBox, to: lastBox) < distance(from: $1.boundingBox, to: lastBox)
+        }
+    }
+
     private func distance(from lhs: CGRect, to rhs: CGRect) -> Double {
         let dx = lhs.midX - rhs.midX
         let dy = lhs.midY - rhs.midY
@@ -382,7 +470,8 @@ final class CameraInspectionController: NSObject, ObservableObject {
         box: CGRect?,
         confidence: Float,
         kind: FollowTargetKind?,
-        status: String
+        status: String,
+        distanceMetric: Double? = nil
     ) {
         DispatchQueue.main.async { [weak self] in
             self?.targetBoundingBox = box
@@ -390,6 +479,13 @@ final class CameraInspectionController: NSObject, ObservableObject {
             self?.targetKind = kind
             self?.targetStatus = status
             self?.lastTargetAt = box == nil ? nil : Date()
+            if let distanceMetric {
+                self?.targetDistanceMetric = distanceMetric
+            } else if kind == .object, let box {
+                self?.targetDistanceMetric = Double(max(box.width, box.height))
+            } else if box == nil {
+                self?.targetDistanceMetric = nil
+            }
         }
     }
 }

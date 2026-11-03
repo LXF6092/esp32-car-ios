@@ -138,6 +138,36 @@ final class InspectionGuidanceTests: XCTestCase {
         XCTAssertEqual(atSetpoint, .zero)
         XCTAssertGreaterThan(fartherThanSetpoint.vy, 0)
     }
+
+    func testTargetFollowingSlowsForRapidApproachAndDistanceHold() {
+        let box = CGRect(x: 0.4, y: 0.4, width: 0.2, height: 0.2)
+        let steady = TargetFollowGuidance.driveVector(
+            boundingBox: box,
+            confidence: 0.9,
+            targetIsFresh: true,
+            desiredTargetSize: 0.40,
+            observedTargetSize: 0.20,
+            targetSizeVelocity: 0
+        )
+        let closingFast = TargetFollowGuidance.driveVector(
+            boundingBox: box,
+            confidence: 0.9,
+            targetIsFresh: true,
+            desiredTargetSize: 0.40,
+            observedTargetSize: 0.20,
+            targetSizeVelocity: 0.8
+        )
+        let holding = TargetFollowGuidance.driveVector(
+            boundingBox: box,
+            confidence: 0.9,
+            targetIsFresh: true,
+            desiredTargetSize: 0.40,
+            observedTargetSize: 0.20,
+            allowApproach: false
+        )
+        XCTAssertGreaterThan(steady.vy, closingFast.vy)
+        XCTAssertEqual(holding.vy, 0)
+    }
 }
 
 @MainActor
