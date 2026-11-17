@@ -30,6 +30,7 @@ final class BLEManager: NSObject, ObservableObject, BLETransport {
     private var peripheral: CBPeripheral?
     private var commandCharacteristic: CBCharacteristic?
     private var telemetryCharacteristic: CBCharacteristic?
+    private var encoderTelemetryCharacteristic: CBCharacteristic?
     private var latestDriveWrite: Data?
     private var pendingCriticalWrite: BLEProtocolV1.Command?
     private var notificationEnabled = false
@@ -119,6 +120,7 @@ final class BLEManager: NSObject, ObservableObject, BLETransport {
         peripheral = nil
         commandCharacteristic = nil
         telemetryCharacteristic = nil
+        encoderTelemetryCharacteristic = nil
         latestDriveWrite = nil
         pendingCriticalWrite = nil
         notificationEnabled = false
@@ -202,7 +204,7 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
         peripheral.discoverCharacteristics(
-            [BLEProtocolV1.commandUUID, BLEProtocolV1.telemetryUUID],
+            [BLEProtocolV1.commandUUID, BLEProtocolV1.telemetryUUID, BLEProtocolV1.encoderTelemetryUUID],
             for: service
         )
     }
@@ -219,6 +221,9 @@ extension BLEManager: CBPeripheralDelegate {
             } else if characteristic.uuid == BLEProtocolV1.telemetryUUID {
                 telemetryCharacteristic = characteristic
                 peripheral.setNotifyValue(true, for: characteristic)
+            } else if characteristic.uuid == BLEProtocolV1.encoderTelemetryUUID {
+                encoderTelemetryCharacteristic = characteristic
+                peripheral.setNotifyValue(true, for: characteristic)
             }
         }
         guard commandCharacteristic != nil, telemetryCharacteristic != nil else {
@@ -234,6 +239,12 @@ extension BLEManager: CBPeripheralDelegate {
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        if characteristic.uuid == BLEProtocolV1.encoderTelemetryUUID {
+            if error == nil, characteristic.isNotifying {
+                peripheral.readValue(for: characteristic)
+            }
+            return
+        }
         guard characteristic.uuid == BLEProtocolV1.telemetryUUID else { return }
         guard error == nil, characteristic.isNotifying else {
             lastError = error?.localizedDescription ?? "无法订阅遥测通知"
@@ -249,9 +260,22 @@ extension BLEManager: CBPeripheralDelegate {
             lastError = error.localizedDescription
             return
         }
-        guard characteristic.uuid == BLEProtocolV1.telemetryUUID, let value = characteristic.value else { return }
+        guard let value = characteristic.value else { return }
+        if characteristic.uuid == BLEProtocolV1.encoderTelemetryUUID {
+            do {
+                var next = telemetry
+                next.encoder = try BLEProtocolV1.decodeEncoderTelemetry(value)
+                telemetry = next
+            } catch {
+                lastError = "编码器遥测数据无效"
+            }
+            return
+        }
+        guard characteristic.uuid == BLEProtocolV1.telemetryUUID else { return }
         do {
-            telemetry = try BLEProtocolV1.decodeTelemetry(value)
+            var decoded = try BLEProtocolV1.decodeTelemetry(value)
+            decoded.encoder = telemetry.encoder
+            telemetry = decoded
             if notificationEnabled {
                 phase = .connected(peripheral.name ?? BLEProtocolV1.advertisedName)
             }

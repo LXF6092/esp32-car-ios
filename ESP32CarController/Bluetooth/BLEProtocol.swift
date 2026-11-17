@@ -5,10 +5,12 @@ enum BLEProtocolV1 {
     static let version: UInt8 = 1
     static let commandFrameSize = 12
     static let telemetryFrameSize = 20
+    static let encoderTelemetryFrameSize = 20
 
     static let serviceUUID = CBUUID(string: "8E7A0001-9C6B-4A6B-8F31-4C4152434152")
     static let commandUUID = CBUUID(string: "8E7A0002-9C6B-4A6B-8F31-4C4152434152")
     static let telemetryUUID = CBUUID(string: "8E7A0003-9C6B-4A6B-8F31-4C4152434152")
+    static let encoderTelemetryUUID = CBUUID(string: "8E7A0004-9C6B-4A6B-8F31-4C4152434152")
     static let advertisedName = "ESP32-CAR-BLE"
 
     enum Opcode: UInt8 {
@@ -97,6 +99,29 @@ enum BLEProtocolV1 {
         )
     }
 
+    static func decodeEncoderTelemetry(_ data: Data) throws -> EncoderTelemetry {
+        guard data.count == encoderTelemetryFrameSize else { throw ProtocolError.badLength }
+        let bytes = [UInt8](data)
+        guard bytes[0] == version else { throw ProtocolError.badVersion }
+        guard crc8(bytes.prefix(encoderTelemetryFrameSize - 1)) == bytes[encoderTelemetryFrameSize - 1] else {
+            throw ProtocolError.badCRC
+        }
+        let flags = bytes[1]
+        return EncoderTelemetry(
+            ready: flags & 0x01 != 0,
+            stalled: flags & 0x02 != 0,
+            frontLeftRPM: Double(bytes.int16LittleEndian(at: 2)) / 10,
+            frontRightRPM: Double(bytes.int16LittleEndian(at: 4)) / 10,
+            rearLeftRPM: Double(bytes.int16LittleEndian(at: 6)) / 10,
+            rearRightRPM: Double(bytes.int16LittleEndian(at: 8)) / 10,
+            frontLeftTicks: bytes.uint16LittleEndian(at: 10),
+            frontRightTicks: bytes.uint16LittleEndian(at: 12),
+            rearLeftTicks: bytes.uint16LittleEndian(at: 14),
+            rearRightTicks: bytes.uint16LittleEndian(at: 16),
+            samplePeriodMilliseconds: Int(bytes[18]) * 10
+        )
+    }
+
     static func crc8<S: Sequence>(_ bytes: S) -> UInt8 where S.Element == UInt8 {
         var value: UInt8 = 0
         for byte in bytes {
@@ -129,6 +154,10 @@ private extension Data {
 private extension Array where Element == UInt8 {
     func uint16LittleEndian(at index: Int) -> UInt16 {
         UInt16(self[index]) | UInt16(self[index + 1]) << 8
+    }
+
+    func int16LittleEndian(at index: Int) -> Int16 {
+        Int16(bitPattern: uint16LittleEndian(at: index))
     }
 
     func uint32LittleEndian(at index: Int) -> UInt32 {

@@ -6,6 +6,7 @@
 - Service: `8E7A0001-9C6B-4A6B-8F31-4C4152434152`
 - Command (Write / Write Without Response): `8E7A0002-9C6B-4A6B-8F31-4C4152434152`
 - Telemetry (Read / Notify): `8E7A0003-9C6B-4A6B-8F31-4C4152434152`
+- Encoder telemetry, optional (Read / Notify): `8E7A0004-9C6B-4A6B-8F31-4C4152434152`
 
 All multibyte integers are little-endian.
 
@@ -58,6 +59,20 @@ Flag bits:
 - bit 2: motor hardware ready
 - bit 3: BLE connected
 - bit 4: recent remote command
+- bit 5: PS2 controller currently owns motion control
+
+## Optional encoder telemetry frame — 20 bytes
+
+This optional characteristic keeps the original telemetry frame compatible with older apps and firmware.
+
+| Offset | Type | Meaning |
+|---:|---|---|
+| 0 | UInt8 | Protocol version (`1`) |
+| 1 | UInt8 | bit 0 encoder ready; bit 1 wheel stalled |
+| 2 | 4 × Int16 | FL/FR/RL/RR signed RPM multiplied by 10 |
+| 10 | 4 × UInt16 | Low 16 bits of signed FL/FR/RL/RR tick counters |
+| 18 | UInt8 | Encoder sample period in units of 10ms |
+| 19 | UInt8 | CRC-8/ATM over bytes `0...18` |
 
 ## Safety contract
 

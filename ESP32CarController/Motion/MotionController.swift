@@ -5,6 +5,7 @@ import Foundation
 final class MotionController: ObservableObject {
     @Published private(set) var pitchDegrees: Double = 0
     @Published private(set) var rollDegrees: Double = 0
+    @Published private(set) var verticalYawRateDegreesPerSecond: Double = 0
     @Published private(set) var hasSample = false
     @Published private(set) var lastError: String?
 
@@ -31,9 +32,18 @@ final class MotionController: ObservableObject {
                 self.lastError = error.localizedDescription
                 return
             }
-            guard let attitude = motion?.attitude else { return }
+            guard let motion else { return }
+            let attitude = motion.attitude
             self.pitchDegrees = attitude.pitch * 180 / .pi
             self.rollDegrees = attitude.roll * 180 / .pi
+            let gravity = motion.gravity
+            let length = max(0.001, sqrt(gravity.x * gravity.x + gravity.y * gravity.y + gravity.z * gravity.z))
+            let rate = motion.rotationRate
+            // Project angular velocity onto the gravity axis. This measures
+            // vehicle yaw for either an upright or a flat phone mount.
+            self.verticalYawRateDegreesPerSecond = -(
+                rate.x * gravity.x + rate.y * gravity.y + rate.z * gravity.z
+            ) / length * 180 / .pi
             self.lastSampleDate = Date()
             self.hasSample = true
             self.lastError = nil
@@ -43,6 +53,7 @@ final class MotionController: ObservableObject {
     func stop() {
         manager.stopDeviceMotionUpdates()
         hasSample = false
+        verticalYawRateDegreesPerSecond = 0
         lastSampleDate = nil
     }
 

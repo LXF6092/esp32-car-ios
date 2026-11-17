@@ -12,6 +12,7 @@ private enum InspectionOperationMode: String, CaseIterable, Identifiable {
 struct CameraInspectionView: View {
     @ObservedObject var coordinator: ControlCoordinator
     @StateObject private var camera = CameraInspectionController()
+    @StateObject private var motion = MotionController()
     @State private var operationMode: InspectionOperationMode = .line
     @State private var automationEnabled = false
     @State private var previousSpeed: UInt8?
@@ -24,6 +25,10 @@ struct CameraInspectionView: View {
     @State private var previousTargetSize: Double?
     @State private var smoothedSonarDistance: Double?
     @State private var distanceHold = false
+    @State private var lineController = LinePatrolController()
+    @State private var linePhase: LinePatrolPhase = .acquiring
+    @State private var lastEncoderTicks: [UInt16]?
+    @State private var patrolWheelRevolutions = 0.0
     @AppStorage("objectFollowTargetSize") private var objectTargetSize = 0.34
     @AppStorage("personFollowShoulderWidth") private var personTargetSize = 0.16
 
@@ -98,11 +103,15 @@ struct CameraInspectionView: View {
                 .multilineTextAlignment(.leading)
         }
         .carCard()
-        .onAppear { camera.start() }
+        .onAppear {
+            camera.start()
+            motion.start()
+        }
         .onDisappear {
             stopAutomation()
             camera.clearTarget()
             camera.stop()
+            motion.stop()
             coordinator.stop()
         }
         .onReceive(controlTimer) { _ in updateAutomation() }
@@ -205,7 +214,14 @@ struct CameraInspectionView: View {
         case .line:
             guard camera.frameIsFresh else { return "相机画面失效" }
             guard let offset = camera.lineOffset else { return "未识别到引导线" }
-            return String(format: "线路偏移 %+.0f%% · 置信度 %.0f%%", offset * 100, camera.lineConfidence * 100)
+            return String(
+                format: "%@ · 偏移 %+.0f%% · 朝向 %+.0f%% · 曲率 %+.0f%% · %.2f轮",
+                linePhase.rawValue,
+                offset * 100,
+                camera.lineHeading * 100,
+                camera.lineCurvature * 100,
+                patrolWheelRevolutions
+            )
         case .object, .person:
             guard let box = camera.targetBoundingBox else { return camera.targetStatus }
             var text = String(
@@ -252,7 +268,7 @@ struct CameraInspectionView: View {
     private var helpText: String {
         switch operationMode {
         case .line:
-            return "识别浅色地面上的深色引导线；二维码仅接受停车和检查点命令。"
+            return "多点识别线路方向和曲率；弯道会自动减速，短暂丢线会低速预测后原地搜索，3秒未恢复则安全停车。"
         case .object:
             return "用手指拖框准确选择小玩具；轻点仍可快速选择，丢失时停车并持续搜索。"
         case .person:
@@ -278,8 +294,12 @@ struct CameraInspectionView: View {
     private func startAutomation() {
         guard canStartAutomation else { return }
         previousSpeed = coordinator.maxSpeed
-        coordinator.maxSpeed = min(coordinator.maxSpeed, operationMode == .line ? 20 : 15)
+        coordinator.maxSpeed = min(coordinator.maxSpeed, operationMode == .line ? 24 : 15)
         resetFollowController()
+        lineController.reset()
+        linePhase = .acquiring
+        lastEncoderTicks = nil
+        patrolWheelRevolutions = 0
         automationEnabled = true
     }
 
@@ -291,6 +311,8 @@ struct CameraInspectionView: View {
             self.previousSpeed = nil
         }
         resetFollowController()
+        lineController.reset()
+        linePhase = .acquiring
     }
 
     private func updateAutomation() {
@@ -300,14 +322,37 @@ struct CameraInspectionView: View {
             return
         }
 
+        if coordinator.telemetry.flags.contains(.ps2Active) {
+            stopAutomation()
+            checkpointMessage = "手柄已接管，自动巡检已暂停"
+            return
+        }
+        if coordinator.telemetry.encoder?.stalled == true {
+            safetyStop("编码器检测到车轮堵转")
+            return
+        }
+        updateEncoderOdometry()
+
         let vector: DriveVector
         switch operationMode {
         case .line:
-            vector = InspectionGuidance.driveVector(
+            let encoderYawProxy = encoderYawRateProxy()
+            let fusedYawRate = motion.isFresh
+                ? motion.verticalYawRateDegreesPerSecond * 0.75 + encoderYawProxy * 0.25
+                : encoderYawProxy
+            let output = lineController.update(
                 lineOffset: camera.lineOffset,
+                headingError: camera.lineHeading,
+                curvature: camera.lineCurvature,
                 confidence: camera.lineConfidence,
-                frameIsFresh: camera.frameIsFresh
+                frameIsFresh: camera.frameIsFresh,
+                obstacleDistanceCentimetres: coordinator.telemetry.distanceCentimetres,
+                obstacleFlag: coordinator.telemetry.flags.contains(.obstacle),
+                yawRateDegreesPerSecond: fusedYawRate
             )
+            linePhase = output.phase
+            checkpointMessage = output.phase.rawValue
+            vector = output.vector
         case .object, .person:
             guard camera.targetBoundingBox != nil, camera.targetIsFresh else {
                 coordinator.stop()
@@ -380,6 +425,32 @@ struct CameraInspectionView: View {
         previousTargetSize = nil
         smoothedSonarDistance = nil
         distanceHold = false
+    }
+
+    private func encoderYawRateProxy() -> Double {
+        guard let encoder = coordinator.telemetry.encoder, encoder.ready else { return 0 }
+        let left = (encoder.frontLeftRPM + encoder.rearLeftRPM) / 2
+        let right = (encoder.frontRightRPM + encoder.rearRightRPM) / 2
+        // A calibrated physical yaw rate requires wheel radius and track width.
+        // This bounded proxy is sufficient for turn-rate damping.
+        return max(-120, min(120, (right - left) * 0.55))
+    }
+
+    private func updateEncoderOdometry() {
+        guard operationMode == .line,
+              let encoder = coordinator.telemetry.encoder,
+              encoder.ready else { return }
+        let current = [
+            encoder.frontLeftTicks, encoder.frontRightTicks,
+            encoder.rearLeftTicks, encoder.rearRightTicks
+        ]
+        defer { lastEncoderTicks = current }
+        guard let previous = lastEncoderTicks else { return }
+        let deltas = zip(current, previous).map { pair -> Int in
+            Int(Int16(bitPattern: pair.0 &- pair.1))
+        }
+        let meanTicks = Double(deltas.reduce(0, +)) / Double(deltas.count)
+        patrolWheelRevolutions += meanTicks / 624.0
     }
 
     private func standardizedRectangle(

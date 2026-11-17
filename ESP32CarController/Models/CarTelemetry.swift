@@ -62,6 +62,21 @@ struct TelemetryFlags: OptionSet, Equatable {
     static let hardwareReady = TelemetryFlags(rawValue: 1 << 2)
     static let bleConnected = TelemetryFlags(rawValue: 1 << 3)
     static let remoteActive = TelemetryFlags(rawValue: 1 << 4)
+    static let ps2Active = TelemetryFlags(rawValue: 1 << 5)
+}
+
+struct EncoderTelemetry: Equatable {
+    var ready: Bool
+    var stalled: Bool
+    var frontLeftRPM: Double
+    var frontRightRPM: Double
+    var rearLeftRPM: Double
+    var rearRightRPM: Double
+    var frontLeftTicks: UInt16
+    var frontRightTicks: UInt16
+    var rearLeftTicks: UInt16
+    var rearRightTicks: UInt16
+    var samplePeriodMilliseconds: Int
 }
 
 struct CarTelemetry: Equatable {
@@ -77,6 +92,7 @@ struct CarTelemetry: Equatable {
     var flags: TelemetryFlags
     var lastSequence: UInt32
     var uptimeMilliseconds: UInt32
+    var encoder: EncoderTelemetry? = nil
 
     static let empty = CarTelemetry(
         state: .disarmed,

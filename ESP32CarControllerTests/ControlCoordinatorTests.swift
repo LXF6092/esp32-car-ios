@@ -57,6 +57,70 @@ final class InspectionGuidanceTests: XCTestCase {
         XCTAssertTrue([left, center, right].allSatisfy { abs($0.vx) <= 100 && abs($0.vy) <= 100 && abs($0.omega) <= 100 })
     }
 
+    func testCurveAndGyroDemandReducePatrolSpeed() {
+        let straight = InspectionGuidance.driveVector(
+            lineOffset: 0, headingError: 0, curvature: 0,
+            confidence: 1, frameIsFresh: true
+        )
+        let bend = InspectionGuidance.driveVector(
+            lineOffset: 0.1, headingError: 0.5, curvature: 0.4,
+            confidence: 1, frameIsFresh: true, yawRateDegreesPerSecond: 70
+        )
+        XCTAssertGreaterThan(straight.vy, bend.vy)
+        XCTAssertGreaterThan(bend.omega, 0)
+    }
+
+    func testPatrolStateAcquiresRecoversAndFailsSafely() {
+        var controller = LinePatrolController()
+        let start = Date(timeIntervalSince1970: 100)
+        for frame in 0..<2 {
+            let result = controller.update(
+                lineOffset: 0.2, headingError: 0.1, curvature: 0,
+                confidence: 0.8, frameIsFresh: true,
+                obstacleDistanceCentimetres: 100, obstacleFlag: false,
+                now: start.addingTimeInterval(Double(frame) * 0.1)
+            )
+            XCTAssertEqual(result.phase, .acquiring)
+            XCTAssertEqual(result.vector, .zero)
+        }
+        let tracking = controller.update(
+            lineOffset: 0.2, headingError: 0.1, curvature: 0,
+            confidence: 0.8, frameIsFresh: true,
+            obstacleDistanceCentimetres: 100, obstacleFlag: false,
+            now: start.addingTimeInterval(0.2)
+        )
+        XCTAssertEqual(tracking.phase, .tracking)
+        XCTAssertGreaterThan(tracking.vector.vy, 0)
+
+        let prediction = controller.update(
+            lineOffset: nil, headingError: 0, curvature: 0,
+            confidence: 0, frameIsFresh: true,
+            obstacleDistanceCentimetres: 100, obstacleFlag: false,
+            now: start.addingTimeInterval(0.3)
+        )
+        XCTAssertEqual(prediction.phase, .predicting)
+        XCTAssertGreaterThan(prediction.vector.vy, 0)
+
+        let recovery = controller.update(
+            lineOffset: nil, headingError: 0, curvature: 0,
+            confidence: 0, frameIsFresh: true,
+            obstacleDistanceCentimetres: 100, obstacleFlag: false,
+            now: start.addingTimeInterval(0.8)
+        )
+        XCTAssertEqual(recovery.phase, .recovering)
+        XCTAssertEqual(recovery.vector.vy, 0)
+        XCTAssertNotEqual(recovery.vector.omega, 0)
+
+        let failed = controller.update(
+            lineOffset: nil, headingError: 0, curvature: 0,
+            confidence: 0, frameIsFresh: true,
+            obstacleDistanceCentimetres: 100, obstacleFlag: false,
+            now: start.addingTimeInterval(3.5)
+        )
+        XCTAssertEqual(failed.phase, .failed)
+        XCTAssertEqual(failed.vector, .zero)
+    }
+
     func testTargetFollowingApproachesOnlyWhenAlignedAndFar() {
         let farCentered = CGRect(x: 0.42, y: 0.35, width: 0.16, height: 0.20)
         let farRight = CGRect(x: 0.75, y: 0.35, width: 0.16, height: 0.20)

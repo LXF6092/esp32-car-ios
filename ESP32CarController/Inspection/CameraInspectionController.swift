@@ -15,11 +15,24 @@ private struct HumanPoseTarget {
     let confidence: Float
 }
 
+private struct LineAnalysis {
+    let offset: Double?
+    let heading: Double
+    let curvature: Double
+    let confidence: Double
+    let pointCount: Int
+
+    static let empty = LineAnalysis(offset: nil, heading: 0, curvature: 0, confidence: 0, pointCount: 0)
+}
+
 final class CameraInspectionController: NSObject, ObservableObject {
     @Published private(set) var permissionDenied = false
     @Published private(set) var isRunning = false
     @Published private(set) var lineOffset: Double?
     @Published private(set) var lineConfidence: Double = 0
+    @Published private(set) var lineHeading: Double = 0
+    @Published private(set) var lineCurvature: Double = 0
+    @Published private(set) var linePointCount = 0
     @Published private(set) var lastFrameAt: Date?
     @Published private(set) var lastMarkerText: String?
     @Published private(set) var errorMessage: String?
@@ -135,6 +148,9 @@ final class CameraInspectionController: NSObject, ObservableObject {
                 self.isRunning = false
                 self.lineOffset = nil
                 self.lineConfidence = 0
+                self.lineHeading = 0
+                self.lineCurvature = 0
+                self.linePointCount = 0
                 self.lastFrameAt = nil
                 self.targetBoundingBox = nil
                 self.targetConfidence = 0
@@ -181,29 +197,77 @@ final class CameraInspectionController: NSObject, ObservableObject {
         }
     }
 
-    private func analyzeLine(_ pixelBuffer: CVPixelBuffer) -> (Double?, Double) {
+    private func analyzeLine(_ pixelBuffer: CVPixelBuffer) -> LineAnalysis {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return (nil, 0) }
+        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return .empty }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        guard width >= 80, height >= 80 else { return (nil, 0) }
+        guard width >= 80, height >= 80 else { return .empty }
 
-        let bins = 24
+        let pointer = base.assumingMemoryBound(to: UInt8.self)
+        let scanLevels = [0.58, 0.65, 0.72, 0.79, 0.86, 0.92]
+        var points: [(y: Double, center: Double, confidence: Double)] = []
+        for level in scanLevels {
+            if let sample = lineSample(
+                pointer: pointer,
+                width: width,
+                height: height,
+                bytesPerRow: bytesPerRow,
+                yFraction: level
+            ) {
+                points.append((level, sample.center, sample.confidence))
+            }
+        }
+
+        guard points.count >= 3 else {
+            let confidence = points.map { $0.confidence }.reduce(0, +) / Double(max(1, points.count))
+            return LineAnalysis(offset: nil, heading: 0, curvature: 0, confidence: confidence, pointCount: points.count)
+        }
+
+        let nearPoints = points.suffix(2)
+        let nearWeight = nearPoints.map { $0.confidence }.reduce(0, +)
+        let nearCenter = nearPoints.reduce(0.0) { $0 + $1.center * $1.confidence } / max(0.001, nearWeight)
+        let farCenter = points.prefix(2).map { $0.center }.reduce(0, +) / Double(min(2, points.count))
+        let middleCenter = points[points.count / 2].center
+        let offset = (nearCenter - 0.5) * 2
+        let heading = max(-1, min(1, (farCenter - nearCenter) * 2.4))
+        let curvature = max(-1, min(1, (farCenter - 2 * middleCenter + nearCenter) * 4.0))
+        let jumps = zip(points, points.dropFirst()).map { pair in
+            abs(pair.0.center - pair.1.center)
+        }
+        let worstJump = jumps.max() ?? 0
+        let coherence = max(0.15, 1 - worstJump * 2.8)
+        let coverage = min(1, Double(points.count) / Double(scanLevels.count))
+        let averageConfidence = points.map { $0.confidence }.reduce(0, +) / Double(points.count)
+        let confidence = max(0, min(1, averageConfidence * coherence * (0.55 + coverage * 0.45)))
+        guard confidence >= 0.12 else {
+            return LineAnalysis(offset: nil, heading: heading, curvature: curvature, confidence: confidence, pointCount: points.count)
+        }
+        return LineAnalysis(offset: offset, heading: heading, curvature: curvature, confidence: confidence, pointCount: points.count)
+    }
+
+    private func lineSample(
+        pointer: UnsafePointer<UInt8>,
+        width: Int,
+        height: Int,
+        bytesPerRow: Int,
+        yFraction: Double
+    ) -> (center: Double, confidence: Double)? {
+        let bins = 32
         var sums = Array(repeating: 0.0, count: bins)
         var counts = Array(repeating: 0, count: bins)
-        let pointer = base.assumingMemoryBound(to: UInt8.self)
-        let startY = Int(Double(height) * 0.58)
-        let endY = Int(Double(height) * 0.92)
-        for y in stride(from: startY, to: endY, by: 4) {
+        let centerY = Int(Double(height) * yFraction)
+        let startY = max(0, centerY - 4)
+        let endY = min(height, centerY + 5)
+        for y in stride(from: startY, to: endY, by: 2) {
             let row = pointer.advanced(by: y * bytesPerRow)
-            for x in stride(from: 0, to: width, by: 4) {
-                let offset = x * 4
-                let blue = Double(row[offset])
-                let green = Double(row[offset + 1])
-                let red = Double(row[offset + 2])
-                let luminance = 0.114 * blue + 0.587 * green + 0.299 * red
+            for x in stride(from: 0, to: width, by: 3) {
+                let pixel = x * 4
+                let luminance = 0.114 * Double(row[pixel])
+                    + 0.587 * Double(row[pixel + 1])
+                    + 0.299 * Double(row[pixel + 2])
                 let bin = min(bins - 1, x * bins / width)
                 sums[bin] += luminance
                 counts[bin] += 1
@@ -212,12 +276,30 @@ final class CameraInspectionController: NSObject, ObservableObject {
         let averages = zip(sums, counts).map { pair in
             pair.0 / Double(max(1, pair.1))
         }
-        guard let darkest = averages.enumerated().min(by: { $0.element < $1.element }) else { return (nil, 0) }
-        let global = averages.reduce(0, +) / Double(averages.count)
-        let confidence = max(0, min(1, (global - darkest.element) / 70.0))
-        guard confidence >= 0.12 else { return (nil, confidence) }
-        let center = (Double(darkest.offset) + 0.5) / Double(bins)
-        return ((center - 0.5) * 2.0, confidence)
+        guard let darkest = averages.enumerated().min(by: { $0.element < $1.element }) else { return nil }
+        let global = averages.reduce(0, +) / Double(bins)
+        let contrast = global - darkest.element
+        guard contrast >= 8 else { return nil }
+
+        let threshold = darkest.element + max(7, contrast * 0.58)
+        var left = darkest.offset
+        var right = darkest.offset
+        while left > 0, averages[left - 1] <= threshold { left -= 1 }
+        while right + 1 < bins, averages[right + 1] <= threshold { right += 1 }
+        let widthFraction = Double(right - left + 1) / Double(bins)
+        guard widthFraction <= 0.48 else { return nil }
+
+        var weightedCenter = 0.0
+        var totalWeight = 0.0
+        for index in left...right {
+            let weight = max(1, global - averages[index])
+            weightedCenter += (Double(index) + 0.5) / Double(bins) * weight
+            totalWeight += weight
+        }
+        let center = weightedCenter / max(1, totalWeight)
+        let contrastConfidence = min(1, contrast / 62)
+        let shapeConfidence = max(0.35, 1 - max(0, widthFraction - 0.24) * 2.8)
+        return (center, contrastConfidence * shapeConfidence)
     }
 
     private func detectMarker(_ pixelBuffer: CVPixelBuffer) {
@@ -499,7 +581,7 @@ extension CameraInspectionController: AVCaptureVideoDataOutputSampleBufferDelega
         frameNumber += 1
         updateTargetTracking(pixelBuffer)
         let analysis = analyzeLine(pixelBuffer)
-        if let offset = analysis.0 {
+        if let offset = analysis.offset {
             smoothedOffset = smoothedOffset.map { $0 * 0.68 + offset * 0.32 } ?? offset
         } else {
             smoothedOffset = nil
@@ -507,7 +589,10 @@ extension CameraInspectionController: AVCaptureVideoDataOutputSampleBufferDelega
         let publishedOffset = smoothedOffset
         DispatchQueue.main.async { [weak self] in
             self?.lineOffset = publishedOffset
-            self?.lineConfidence = analysis.1
+            self?.lineConfidence = analysis.confidence
+            self?.lineHeading = analysis.heading
+            self?.lineCurvature = analysis.curvature
+            self?.linePointCount = analysis.pointCount
             self?.lastFrameAt = Date()
         }
         if frameNumber % 6 == 0 { detectMarker(pixelBuffer) }

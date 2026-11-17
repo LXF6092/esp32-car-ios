@@ -47,6 +47,20 @@ final class BLEProtocolTests: XCTestCase {
             XCTAssertEqual(error as? BLEProtocolV1.ProtocolError, .badCRC)
         }
     }
+
+    func testDecodeEncoderTelemetry() throws {
+        let data = try XCTUnwrap(Data(hex: "0103d20438fe00004e00b004feff040009000a2d"))
+        let encoder = try BLEProtocolV1.decodeEncoderTelemetry(data)
+        XCTAssertTrue(encoder.ready)
+        XCTAssertTrue(encoder.stalled)
+        XCTAssertEqual(encoder.frontLeftRPM, 123.4, accuracy: 0.01)
+        XCTAssertEqual(encoder.frontRightRPM, -45.6, accuracy: 0.01)
+        XCTAssertEqual(encoder.rearRightRPM, 7.8, accuracy: 0.01)
+        XCTAssertEqual(encoder.frontLeftTicks, 1200)
+        XCTAssertEqual(encoder.frontRightTicks, 65534)
+        XCTAssertEqual(encoder.rearLeftTicks, 4)
+        XCTAssertEqual(encoder.samplePeriodMilliseconds, 100)
+    }
 }
 
 private extension Data {
